@@ -15,14 +15,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
+
+
 include_recipe 'apt'
 include_recipe 'ruby_build'
-include_recipe 'redisio::install'
-include_recipe 'redisio::enable'
-include_recipe 'postgresql'
-include_recipe 'postgresql::ruby'
-include_recipe "runit"
 
 ruby_build_ruby '1.9.3-p362' do
   prefix_path '/usr/local/'
@@ -30,39 +26,71 @@ ruby_build_ruby '1.9.3-p362' do
   action :install
 end
 
+include_recipe 'redisio::install'
+include_recipe 'redisio::enable'
+include_recipe 'postgresql::server'
+include_recipe 'postgresql::client'
+include_recipe 'postgresql::ruby'
+include_recipe "runit"
+include_recipe "database"
+
 gem_package 'bundler' do
   version '1.2.3'
   gem_binary '/usr/local/bin/gem'
   options '--no-ri --no-rdoc'
 end
 
-#pg_user "hound_prod" do
-  #privileges :superuser => false, :createdb => false, :login => true
-  #encrypted_password "643097a6d836edb48c71c780a6db0fa8"
-#end
+postgresql_database 'hound_prod' do
+  connection ({:host => "127.0.0.1", :port => 5432})
+  action :create
+end
 
-#pg_database "hound_prod" do
-  #owner "hound_prod"
-  #encoding "utf8"
-  #locale "en_US.UTF8"
-#end
+postgresql_database_user 'hound_prod' do
+  connection ({:host => "127.0.0.1", :port => 5432})
+  password 'hound_prod'
+  action :create
+end
 
-## we create new user that will run our application server
-#user_account 'deployer' do
-  #create_group true
-  #ssh_keygen false
-#end
+#ruby ssh_known_hosts_entry 'github.com'
 
-ruby ssh_known_hosts_entry 'github.com'
+bash 'add github to known_hosts' do
+  code 'sudo ssh-keyscan -H github.com > /etc/ssh/ssh_known_hosts'
+end
 
-# we define our application using application resource provided by application cookbook
 application 'app' do
   owner 'ubuntu'
-  #group 'deployer'
+  group 'ubuntu'
   path '/home/ubuntu/app'
   revision 'master'
   repository 'git@github.com:siyelo/Hound.git'
+  environment_name 'production'
   rails do
     bundler true
   end
+end
+
+template "/home/ubuntu/app/current/config/database.yml" do
+  source 'database.yml.erb'
+  owner 'ubuntu'
+  group 'ubuntu'
+  mode "644"
+end
+
+bash 'remove test rake task' do
+  code 'rm -f /home/ubuntu/app/current/lib/tasks/test.rake'
+end
+
+bash 'precompile assets' do
+  code 'cd /home/ubuntu/app/current/'
+  code 'rake assets:precompile'
+end
+
+bash 'export upstart' do
+  code 'cd /home/ubuntu/app/current/'
+  code 'sudo bundle exec foreman export upstart hound_script -a hound -u ubuntu'
+  code 'sudo cp hound_script/* /etc/init/'
+  code "rm -rf hound_script"
+  code "sudo sed -i \"1 i start on runlevel [2345]\" /etc/init/hound.conf"
+  code "sudo start hound"
+  code "sudo RAILS_ENV=production unicorn -p 80 -c config/unicorn.rb"
 end
